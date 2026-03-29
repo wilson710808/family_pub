@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>StockAI - 美股投顧助手</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js?v=1774713986673"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -439,6 +440,21 @@
     #chart { width: 100%; height: 280px; border-radius: 8px; overflow: hidden; }
     .chart-loading { text-align: center; padding: 60px; color: var(--text-secondary); }
     .chart-error { text-align: center; padding: 40px; color: var(--text-secondary); font-size: 13px; }
+
+    /* Markdown 样式 */
+    .markdown-body { line-height: 1.7; font-size: 14px; }
+    .markdown-body h2 { font-size: 17px; font-weight: 700; margin: 20px 0 12px 0; color: var(--text); border-bottom: 2px solid var(--accent); padding-bottom: 6px; }
+    .markdown-body h3 { font-size: 15px; font-weight: 600; margin: 16px 0 10px 0; color: var(--text); }
+    .markdown-body table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+    .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+    .markdown-body th { background: var(--bg); font-weight: 600; }
+    .markdown-body tr:nth-child(even) { background: var(--bg); }
+    .markdown-body ul, .markdown-body ol { margin: 8px 0; padding-left: 20px; }
+    .markdown-body li { margin: 6px 0; }
+    .markdown-body p { margin: 10px 0; }
+    .markdown-body strong { font-weight: 600; color: var(--text); }
+    .markdown-body code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .markdown-body blockquote { border-left: 3px solid var(--accent); padding-left: 12px; margin: 12px 0; color: var(--text-secondary); }
   </style>
 </head>
 <body>
@@ -710,7 +726,61 @@
       resultView.classList.add('show');
     }
 
-    function renderResult(ticker, type, content, quote) {
+    
+    // Markdown 渲染函数
+    function renderMarkdown(text) {
+      // 尝试使用 marked.js
+      if (typeof marked !== 'undefined') {
+        try {
+          return marked.parse(text);
+        } catch(e) {
+          console.error('marked error:', e);
+        }
+      }
+      
+      // 降级渲染：完整格式化
+      let html = text;
+      
+      // 处理表格
+      const tableRegex = /\|(.*)\|\n\|[-\s|]+\|\n((?:\|.*\|\n?)+)/g;
+      html = html.replace(tableRegex, (match, header, rows) => {
+        const headers = header.split('|').filter(h => h.trim()).map(h => `<th>${h.trim()}</th>`).join('');
+        const rowsHtml = rows.trim().split('\n').map(row => {
+          const cells = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+          return `<tr>${cells}</tr>`;
+        }).join('');
+        return `<table style="width:100%;border-collapse:collapse;margin:12px 0;"><thead><tr>${headers}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
+      });
+      
+      // 处理简单表格（只有一行表头）
+      const simpleTableRegex = /\|(.*)\|\n\|[-\s|]+\|\n\|(.*)\|/g;
+      html = html.replace(simpleTableRegex, (match, header, row) => {
+        const headers = header.split('|').filter(h => h.trim()).map(h => `<th style="border:1px solid #ddd;padding:8px;background:#f5f5f5;">${h.trim()}</th>`).join('');
+        const cells = row.split('|').filter(c => c.trim()).map(c => `<td style="border:1px solid #ddd;padding:8px;">${c.trim()}</td>`).join('');
+        return `<table style="width:100%;border-collapse:collapse;margin:12px 0;"><thead><tr>${headers}</tr></thead><tbody><tr>${cells}</tr></tbody></table>`;
+      });
+      
+      // 处理标题
+      html = html.replace(/## (.*)/g, '<h2 style="font-size:17px;font-weight:700;margin:16px 0 8px 0;color:#333;border-bottom:2px solid #007AFF;padding-bottom:4px;">$1</h2>');
+      html = html.replace(/### (.*)/g, '<h3 style="font-size:15px;font-weight:600;margin:12px 0 6px 0;color:#333;">$1</h3>');
+      
+      // 处理粗体
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="font-weight:700;">$1</strong>');
+      
+      // 处理列表
+      html = html.replace(/^- (.*)$/gm, '<li style="margin:4px 0;">$1</li>');
+      
+      // 处理分隔线
+      html = html.replace(/---/g, '<hr style="border:none;border-top:1px solid #eee;margin:16px 0;">');
+      
+      // 处理换行
+      html = html.replace(/\n\n/g, '</p><p style="margin:8px 0;">');
+      html = html.replace(/\n/g, '<br>');
+      
+      return html;
+    }
+
+function renderResult(ticker, type, content, quote) {
       const typeLabels = {
         overview: '全面分析',
         technical: '技術面分析',
@@ -799,7 +869,7 @@
         
         <div class="result-card">
           <div class="result-title">${typeLabels[type] || '分析結果'}</div>
-          <div class="result-content">${content}</div>
+          <div class="result-content markdown-body">${renderMarkdown(content)}</div>
         </div>
         <div class="action-row">
           <button class="action-btn secondary" onclick="copyResult()">📋 複製</button>
@@ -1012,6 +1082,9 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tickers: watchlist })
         });
+        
+        if (!res.ok) throw new Error('網絡錯誤');
+        
         const data = await res.json();
 
         if (!data.success) throw new Error('獲取失敗');
@@ -1050,7 +1123,8 @@
         }).join('');
 
       } catch (error) {
-        container.innerHTML = '<div class="empty"><div class="empty-icon">❌</div><div class="empty-text">載入失敗</div></div>';
+        console.error('自选股加载失败:', error);
+        container.innerHTML = '<div class="empty"><div class="empty-icon">❌</div><div class="empty-text">載入失敗，請檢查網絡連接</div></div>';
       }
     }
 
@@ -1454,7 +1528,7 @@
         const data = await res.json();
 
         chatMessages.lastElementChild.remove();
-        chatMessages.innerHTML += `<div class="chat-msg ai">${data.content}</div>`;
+        chatMessages.innerHTML += `<div class="chat-msg ai markdown-body">${renderMarkdown(data.content)}</div>`;
         chatMessages.scrollTop = chatMessages.scrollHeight;
 
       } catch (error) {
@@ -1490,7 +1564,7 @@
         resultDiv.innerHTML = `
           <div class="result-card">
             <div class="result-title">💼 持倉分析建議</div>
-            <div class="result-content">${data.content}</div>
+            <div class="result-content markdown-body">${renderMarkdown(data.content)}</div>
           </div>
         `;
 

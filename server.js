@@ -23,54 +23,32 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Alpha Vantage K 線數據
-async function fetchAlphaVantageHistorical(ticker) {
-  if (!config.alphaVantageKey || config.alphaVantageKey === 'demo') {
-    return null;
-  }
-  
-  try {
-    // 獲取每日 K 線數據
-    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&apikey=${config.alphaVantageKey}&outputsize=compact`;
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    const timeSeries = data['Time Series (Daily)'];
-    if (!timeSeries) return null;
-    
-    const candles = Object.entries(timeSeries).slice(0, 90).reverse().map(([date, values]) => ({
-      time: Math.floor(new Date(date).getTime() / 1000), // TradingView 需要 Unix 秒
-      open: parseFloat(values['1. open']),
-      high: parseFloat(values['2. high']),
-      low: parseFloat(values['3. low']),
-      close: parseFloat(values['4. close']),
-      volume: parseInt(values['5. volume'])
-    }));
-    
-    return candles;
-  } catch (e) {
-    console.error('Alpha Vantage Historical error:', e.message);
-    return null;
-  }
-}
-
-// K 線 API
+// K 線 API（使用 Python Yahoo Finance 爬虫）
 app.get('/api/chart/:ticker', async (req, res) => {
   const ticker = req.params.ticker?.toUpperCase();
   if (!ticker) return res.status(400).json({ error: '請提供股票代碼' });
   
-  const candles = await fetchAlphaVantageHistorical(ticker);
-  
-  if (candles) {
-    return res.json({ success: true, candles, source: 'alphavantage' });
-  }
-  
-  // 返回模擬數據（說明需要 API Key）
-  res.json({ 
-    success: false, 
-    error: '需要 Alpha Vantage API Key 來獲取 K 線數據',
-    hint: '請在 .env 中設置 ALPHA_VANTAGE_KEY'
+  // 使用 Python 爬虫获取 K 线
+  const result = await new Promise((resolve) => {
+    const python = spawn('python3', [path.join(__dirname, 'realtime_price.py'), ticker, '--kline']);
+    let data = '';
+    
+    python.stdout.on('data', (chunk) => { data += chunk; });
+    python.stderr.on('data', (chunk) => { console.error('K线爬虫错误:', chunk.toString()); });
+    python.on('close', (code) => {
+      if (code === 0 && data) {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          resolve({ success: false, error: '解析失败' });
+        }
+      } else {
+        resolve({ success: false, error: '爬虫执行失败' });
+      }
+    });
   });
+  
+  res.json(result);
 });
 
 // 嘗試使用 Alpha Vantage API
@@ -109,21 +87,22 @@ async function fetchAlphaVantage(ticker) {
 }
 
 // 系統提示
-const SYSTEM_PROMPT = `你是一位擁有 30 年華爾街經驗的資深美股投資顧問，曾任職高盛、摩根士丹利。
+const SYSTEM_PROMPT = `你是專業的美股投資顧問，請用繁體中文回答。
 
-你的專業背景：
-- 深度研究美股科技、醫療、金融、能源等各大板塊
-- 精通技術分析（K線、均線、RSI、MACD、布林帶）
-- 擅長基本面分析（PE、PB、EPS、自由現金流、護城河）
-- 熟悉宏觀經濟對股市的影響
+**嚴格格式要求（必須遵守）：**
+1. 每個標題使用 ## 格式，前後各空一行
+2. 數據必須用表格呈現，表格前後各空一行
+3. 每段文字不超過 2 行，然後換行
+4. 列表項每項一行，用 - 或數字開頭
+5. 重點用 ✅ ❌ ⚠️ ⭐ 符號標注
+6. 重要結論和數字用 **粗體**
+7. 分隔線使用 ---
+8. 最後加上免責聲明
 
-你的溝通風格：
-- 直接、專業、有洞察力，不說廢話
-- 給出具體的數字和理由，不模糊
-- 主動提示風險，不只說好話
-- 用繁體中文回答
-
-重要聲明：你的建議僅供參考，不構成正式投資建議。`;
+**禁止：**
+- 寫成一大段文字
+- 缺乏結構和分段
+- 表格沒有空行`;
 
 // 健康檢查
 app.get('/api/health', (req, res) => {
@@ -133,7 +112,8 @@ app.get('/api/health', (req, res) => {
 // 嘗試獲取實時股價（Python 爬蟲）
 function getStockPricePython(ticker) {
   return new Promise((resolve) => {
-    const python = spawn('python3', [path.join(__dirname, 'stock_price.py'), ticker]);
+    // 使用新的多数据源爬虫
+    const python = spawn('python3', [path.join(__dirname, 'realtime_price.py'), ticker]);
     let data = '';
     let error = '';
 
@@ -182,18 +162,16 @@ app.post('/api/quote', async (req, res) => {
   
   const t = ticker.trim().toUpperCase();
   
-  // Step 1: 嘗試 Alpha Vantage (優先)
+  // Step 1: 嘗試 Python 爬蟲（優先 - Yahoo Finance 實時數據）
+  const pythonResult = await getStockPricePython(t);
+  if (pythonResult && pythonResult.price && !pythonResult.error) {
+    return res.json({ success: true, ...pythonResult });
+  }
+  
+  // Step 2: 嘗試 Alpha Vantage（備用）
   const alphaResult = await fetchAlphaVantage(t);
   if (alphaResult && alphaResult.price) {
     return res.json({ success: true, ...alphaResult });
-  }
-  
-  // Step 2: 嘗試 Python 爬蟲
-  const pythonResult = await getStockPricePython(t);
-  if (pythonResult && pythonResult.price) {
-    pythonResult.source = 'python';
-    pythonResult.note = '實時數據';
-    return res.json({ success: true, ...pythonResult });
   }
   
   // Step 3: 使用模擬數據
@@ -267,15 +245,223 @@ app.post('/api/analyze', async (req, res) => {
   }
 
   const prompts = {
-    overview: `請對 ${ticker} 進行全面分析，包含：1.公司基本面 2.財務表現 3.估值分析 4.技術面 5.風險 6.投資建議（買入/持有/觀望/賣出）及目標價`,
-    technical: `請對 ${ticker} 進行技術分析：1.趨勢判斷 2.支撐壓力位 3.RSI、MACD 均線信號 4.短期操作建議`,
-    fundamental: `請對 ${ticker} 進行基本面分析：1.商業模式 2.財務健康度 3.成長性 4.估值合理性 5.長期投資價值`,
-    compare: `請比較分析：${ticker}（業務差異、財務對比、競爭優勢、估值、哪個更值得投資）`,
-    portfolio: `請分析持倉：${ticker}（行業分佈、風險評估、調整建議、優化方向）`,
-    risk: `請對 ${ticker} 進行風險評估：1.估值風險 2.業務風險 3.競爭風險 4.宏觀風險 5.最大虧損評估 6.風險評分1-10 7.黑天鵝風險`,
-    signal: `請對 ${ticker} 給出具體買賣信號：1.買入價格範圍 2.止損價格 3.目標價格 4.風險回報比 5.建議倉位 6.持有期限 7.現在適合買/賣/觀望？`,
+    overview: `
+請對 ${ticker} 進行全面分析，格式如下：
+
+## 📊 公司基本面
+- 公司簡介與主營業務
+- 行業地位與競爭優勢
+
+## 💰 財務表現
+| 指標 | 數值 | 評價 |
+|------|------|------|
+| 營收 | ... | ... |
+| 淨利 | ... | ... |
+| 毛利率 | ... | ... |
+
+## 📈 估值分析
+- 當前估值水平
+- 與同行對比
+
+## ⚡ 技術面
+- 短期趨勢
+- 支撐/壓力位
+
+## ⚠️ 風險提示
+1. 主要風險點
+2. 潛在隱憂
+
+## 🎯 投資建議
+**結論：** 買入 / 持有 / 觀望 / 賣出
+**目標價：** $XXX
+**理由：** XXX
+`,
+
+    technical: `
+請對 ${ticker} 進行技術分析，格式如下：
+
+## 📈 趨勢判斷
+- 日線趨勢：上漲 / 震盪 / 下跌
+- 週線趨勢：上漲 / 震盪 / 下跌
+
+## 📍 關鍵位置
+| 類型 | 價格 | 說明 |
+|------|------|------|
+| 壓力位 1 | $XXX | ... |
+| 壓力位 2 | $XXX | ... |
+| 支撐位 1 | $XXX | ... |
+| 支撐位 2 | $XXX | ... |
+
+## 📊 技術指標
+| 指標 | 數值 | 信號 |
+|------|------|------|
+| RSI | XX | 超買/超賣/中性 |
+| MACD | ... | 金叉/死叉 |
+| 均線 | ... | 多頭/空頭排列 |
+
+## 🎯 操作建議
+- **短線：** XXX
+- **中線：** XXX
+- **停損點：** $XXX
+`,
+
+    fundamental: `
+請對 ${ticker} 進行基本面分析，格式如下：
+
+## 🏢 商業模式
+- 核心產品/服務
+- 營收來源結構
+
+## 💰 財務健康度
+| 指標 | 數值 | 評分 |
+|------|------|------|
+| 營收增長率 | XX% | ⭐⭐⭐⭐⭐ |
+| 淨利率 | XX% | ⭐⭐⭐⭐⭐ |
+| 負債率 | XX% | ⭐⭐⭐⭐⭐ |
+| 現金流 | XXX | ⭐⭐⭐⭐⭐ |
+
+## 📊 成長性分析
+- 過去3年複合成長率
+- 未來預期成長
+- 成長驅動因素
+
+## 💎 估值合理性
+- P/E ratio vs 行業平均
+- PEG ratio
+- 是否被低估/高估
+
+## ✅ 投資結論
+**長期投資價值：** ⭐⭐⭐⭐⭐ (5星制)
+**建議：** XXX
+`,
+
+    risk: `
+請對 ${ticker} 進行風險評估，格式如下：
+
+## ⚠️ 風險評估報告
+
+### 📊 風險評分
+| 風險類型 | 評分 (1-10) | 說明 |
+|----------|-------------|------|
+| 估值風險 | X | ... |
+| 業務風險 | X | ... |
+| 競爭風險 | X | ... |
+| 宏觀風險 | X | ... |
+| **總評分** | **X** | ... |
+
+### 🔴 主要風險點
+1. **風險一：** XXX
+   - 影響程度：高/中/低
+   - 發生概率：高/中/低
+
+2. **風險二：** XXX
+
+### 🦢 黑天鵝風險
+- 潛在黑天鵝事件
+- 可能影響
+
+### 💰 最大虧損評估
+- 極端情況下可能跌幅：XX%
+- 建議停損位置：$XXX
+
+### ✅ 風險結論
+**風險等級：** 低 / 中 / 高
+**適合投資者：** 保守型 / 穩健型 / 積極型
+`,
+
+    signal: `
+請對 ${ticker} 給出具體買賣信號，格式如下：
+
+## 🎯 買賣信號分析
+
+### 📊 綜合評分
+| 項目 | 評分 | 說明 |
+|------|------|------|
+| 技術面 | ⭐⭐⭐⭐⭐ | ... |
+| 基本面 | ⭐⭐⭐⭐⭐ | ... |
+| 籌碼面 | ⭐⭐⭐⭐⭐ | ... |
+| 消息面 | ⭐⭐⭐⭐⭐ | ... |
+
+### 💰 價位建議
+| 操作 | 價格區間 | 說明 |
+|------|----------|------|
+| 買入區間 | $XXX - $XXX | 分批買入 |
+| 目標價 1 | $XXX | 短期目標 |
+| 目標價 2 | $XXX | 中期目標 |
+| 停損價 | $XXX | 跌破則出場 |
+
+### ⚖️ 風險回報比
+- 預期收益：XX%
+- 潛在虧損：XX%
+- 風險回報比：1:X
+
+### 📅 持有建議
+- **持有期限：** 短線(X天) / 中線(X週) / 長線(X月)
+- **建議倉位：** XX% 資金
+
+### ✅ 操作結論
+**當前建議：** 🟢 買入 / 🟡 觀望 / 🔴 賣出
+**理由：** XXX
+`,
+
+    compare: `
+請對 ${ticker} 進行比較分析，格式如下：
+
+## 📊 競爭對比分析
+
+### 🏢 公司對比
+| 項目 | ${ticker} | 競爭對手A | 競爭對手B |
+|------|-----------|-----------|-----------|
+| 市值 | $XXX | $XXX | $XXX |
+| 營收 | $XXX | $XXX | $XXX |
+| 市佔率 | XX% | XX% | XX% |
+| P/E | XX | XX | XX |
+
+### ⚖️ 優勢對比
+**${ticker} 優勢：**
+- ✅ 優勢一
+- ✅ 優勢二
+
+**劣勢：**
+- ❌ 劣勢一
+- ❌ 劣勢二
+
+### 📈 投資價值排序
+1. **XXX** - 理由
+2. **XXX** - 理由
+3. **XXX** - 理由
+
+### ✅ 結論
+**推薦順序：** XXX
+`,
+
+    portfolio: `
+請分析持倉組合：${ticker}，格式如下：
+
+## 💼 投資組合分析
+
+### 📊 持倉結構
+| 股票 | 佔比 | 行業 | 評級 |
+|------|------|------|------|
+| XXX | XX% | 科技 | ⭐⭐⭐⭐⭐ |
+| XXX | XX% | 消費 | ⭐⭐⭐⭐⭐ |
+
+### ⚠️ 風險評估
+- 行業集中度：高/中/低
+- 單一股最大佔比：XX%
+- 整體風險等級：高/中/低
+
+### 🔧 調整建議
+1. **加碼：** XXX
+2. **減碼：** XXX  
+3. **新增：** XXX
+
+### ✅ 優化方向
+XXX
+`,
+
     chat: question || `請分析 ${ticker}`
-  };
+  }
 
   try {
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -312,8 +498,12 @@ app.post('/api/analyze', async (req, res) => {
 
 // 問答 API
 app.post('/api/chat', async (req, res) => {
-  const { messages } = req.body;
-  if (!messages?.length) {
+  const { messages, question } = req.body;
+  
+  // 支持两种格式：messages 数组或单个 question
+  const chatMessages = messages || (question ? [{ role: 'user', content: question }] : null);
+  
+  if (!chatMessages?.length) {
     return res.status(400).json({ error: '請提供對話內容' });
   }
 
@@ -328,10 +518,10 @@ app.post('/api/chat', async (req, res) => {
         model: config.model,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          ...messages
+          ...chatMessages
         ],
         temperature: 0.7,
-        max_tokens: 1500
+        max_tokens: 2500
       })
     });
 
