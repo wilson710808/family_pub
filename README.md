@@ -16,6 +16,7 @@
 | 🤖 **AI 深度分析** | 8 種分析模式：全面、技術、基本面、風險評估等 |
 | 💬 **AI 問答** | 與 AI 投顧顧問即時對話 |
 | 💰 **模擬下單** | $10 萬美元虛擬資金，練習投資策略 |
+| 🛡️ **健康監控** | 自動監控服務狀態，異常時自動重啟 |
 
 ---
 
@@ -136,13 +137,43 @@ Content-Type: application/json
 
 ---
 
+## 🛡️ 健康監控機制
+
+### 自動監控
+
+本專案內建健康監控腳本 `monitor.sh`，可搭配 OpenClaw Cron 或其他定時任務使用：
+
+```bash
+# 手動執行健康檢查
+bash monitor.sh
+```
+
+### 監控功能
+
+- **健康檢查**：定期檢測 `/api/health` 端點
+- **自動重啟**：服務無響應時自動重啟
+- **重試機制**：失敗重試 3 次（間隔 10 秒）
+- **日誌記錄**：所有操作記錄到日誌文件
+
+### 建議配置
+
+使用 Cron 每 15 分鐘自動檢查：
+
+```cron
+*/15 * * * * /path/to/monitor.sh
+```
+
+---
+
 ## 📁 專案結構
 
 ```
 stockadvisor/
 ├── server.js           # 後端服務 (Express)
+├── monitor.sh          # 健康監控腳本
 ├── public/
 │   └── index.html      # 前端 SPA
+├── realtime_price.py   # 股價爬蟲 (Yahoo Finance)
 ├── stock_price.py      # 股價爬蟲 (備用)
 ├── USER_MANUAL.md      # 用戶操作手冊
 ├── package.json
@@ -189,4 +220,4 @@ MIT License
 
 ---
 
-*最後更新：2026-03-28*
+*最後更新：2026-03-30*
