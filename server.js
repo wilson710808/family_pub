@@ -662,8 +662,13 @@ XXX
   }
 
   try {
+    // 设置 120 秒超时
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`
@@ -678,6 +683,8 @@ XXX
         max_tokens: 2000
       })
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       const err = await response.text();
@@ -706,8 +713,12 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
+    const controller2 = new AbortController();
+    const timeoutId2 = setTimeout(() => controller2.abort(), 120000);
+
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
+      signal: controller2.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`
@@ -723,6 +734,7 @@ app.post('/api/chat', async (req, res) => {
       })
     });
 
+    clearTimeout(timeoutId2);
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '無回應';
     
