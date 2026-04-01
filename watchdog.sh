@@ -5,16 +5,17 @@
 LOG="/Users/here/.qclaw/workspace/memory/watchdog.log"
 DIR="/Users/here/.qclaw/workspace/stockadvisor"
 PORT=3001
+NODE_PATH="/opt/homebrew/bin/node"
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "[2026-04-02 01:00:21] $1" >> "$LOG"
+    echo "[2026-04-02 01:00:21] $1"
 }
 
 start_service() {
     log "🚀 启动 StockAI 服务..."
     cd "$DIR"
-    nohup node server.js >> "$LOG" 2>&1 &
+    nohup "$NODE_PATH" server.js >> "$LOG" 2>&1 &
     sleep 3
     if curl -s --max-time 5 http://localhost:$PORT/api/health > /dev/null 2>&1; then
         log "✅ 服务启动成功 (PID: $!)"
