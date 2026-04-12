@@ -1,7 +1,7 @@
 #!/bin/bash
 # StockAI 服务健康监控与自动重启脚本
 # 监控 URL
-URL="http://192.168.2.72:3001/api/health"
+URL="http://192.168.2.102:3001/api/health"
 LOG="/Users/here/.qclaw/workspace/memory/stockai_monitor.log"
 PID_FILE="/Users/here/.qclaw/workspace/stockadvisor/stockadvisor.pid"
 SERVER_DIR="/Users/here/.qclaw/workspace/stockadvisor"

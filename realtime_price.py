@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-实时股价爬虫 - 多数据源备用方案
-支持：实时股价 + K线数据
+實時股價爬蟲 - Twelve Data 主導備用方案
+支持：實時股價 + K線數據
 """
 import sys
 import json
@@ -9,13 +9,14 @@ import urllib.request
 import urllib.error
 import ssl
 import re
+from datetime import datetime
 
-def get_price_yahoo(ticker):
-    """Yahoo Finance Query API"""
+def get_price_twelvedata(ticker):
+    """Twelve Data 實時股價（免費 API）"""
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+        url = f"https://api.twelvedata.com/price?symbol={ticker}&apikey=demo"
         req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
         })
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -23,83 +24,23 @@ def get_price_yahoo(ticker):
         
         with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
             data = json.loads(response.read().decode())
-            
-        result = data['chart']['result'][0]
-        meta = result['meta']
         
-        price = meta.get('regularMarketPrice')
-        prevClose = meta.get('previousClose', meta.get('chartPreviousClose', price))
-        
-        if not price:
-            return {'error': 'Yahoo: 无法获取价格'}
-        
-        change = price - prevClose if prevClose else 0
-        changePercent = (change / prevClose * 100) if prevClose else 0
-        
-        return {
-            'ticker': ticker,
-            'price': price,
-            'change': round(change, 2),
-            'changePercent': round(changePercent, 2),
-            'prevClose': prevClose,
-            'open': meta.get('chartPreviousClose', price),
-            'high': price * 1.01,
-            'low': price * 0.99,
-            'source': 'yahoo'
-        }
-    except Exception as e:
-        return {'error': f'Yahoo error: {str(e)}'}
-
-def get_price_google(ticker):
-    """Google Finance 网页爬虫"""
-    try:
-        url = f"https://www.google.com/finance/quote/{ticker}:NASDAQ"
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        })
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
-            html = response.read().decode()
-        
-        price_match = re.search(r'class="fxKbKd"[^>]*>([\d,.]+)<', html)
-        if not price_match:
-            price_match = re.search(r'data-last-price="([\d,.]+)"', html)
-        
-        if price_match:
-            price = float(price_match.group(1).replace(',', ''))
+        if 'price' in data:
             return {
                 'ticker': ticker,
-                'price': price,
-                'source': 'google'
+                'price': float(data['price']),
+                'source': 'twelvedata'
             }
-        return {'error': 'Google: 无法解析价格'}
+        return {'error': 'Twelve Data: 無價格數據'}
     except Exception as e:
-        return {'error': f'Google error: {str(e)}'}
+        return {'error': f'Twelve Data error: {str(e)}'}
 
-def get_realtime_price(ticker):
-    """尝试多个数据源获取实时股价"""
-    sources = [
-        ('Yahoo Finance', get_price_yahoo),
-        ('Google Finance', get_price_google),
-    ]
-    
-    for name, func in sources:
-        result = func(ticker)
-        if 'price' in result and result['price']:
-            result['note'] = f'实时数据 ({name})'
-            return result
-    
-    return {'error': '所有数据源都无法获取价格'}
-
-def get_kline_yahoo(ticker, days=90):
-    """Yahoo Finance K线数据"""
+def get_quote_twelvedata(ticker):
+    """Twelve Data 完整報價"""
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range={days}d"
+        url = f"https://api.twelvedata.com/quote?symbol={ticker}&interval=1day&apikey=demo"
         req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
         })
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -108,42 +49,107 @@ def get_kline_yahoo(ticker, days=90):
         with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
             data = json.loads(response.read().decode())
         
-        result = data['chart']['result'][0]
-        timestamps = result.get('timestamp', [])
-        quote = result.get('indicators', {}).get('quote', [{}])[0]
+        if 'status' in data and data['status'] == 'error':
+            return {'error': f"Twelve Data: {data.get('message', 'Unknown error')}"}
         
+        return {
+            'success': True,
+            'ticker': ticker,
+            'price': float(data.get('close', 0)),
+            'change': float(data.get('percent_change_ytd', 0)),
+            'changePercent': float(data.get('percent_change_ytd', 0)),
+            'prevClose': float(data.get('previous_close', data.get('close', 0))),
+            'open': float(data.get('open', 0)),
+            'high': float(data.get('high', 0)),
+            'low': float(data.get('low', 0)),
+            'volume': int(data.get('volume', 0)),
+            'timestamp': datetime.now().timestamp() * 1000,
+            'source': 'twelvedata',
+            'note': '實時數據 (Twelve Data)'
+        }
+    except Exception as e:
+        return {'error': f'Twelve Data error: {str(e)}'}
+
+def get_kline_twelvedata(ticker, days=90):
+    """Twelve Data K線數據"""
+    try:
+        url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval=1day&outputsize={days}&format=JSON&apikey=demo"
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+        })
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
+            data = json.loads(response.read().decode())
+        
+        if 'status' in data and data['status'] == 'error':
+            return {'success': False, 'error': f"Twelve Data K線: {data.get('message', 'Unknown')}"}
+        
+        values = data.get('values', [])
         candles = []
-        for i, ts in enumerate(timestamps):
-            if ts and i < len(quote.get('open', [])) and quote['open'][i] is not None:
-                candles.append({
-                    'time': ts,
-                    'open': quote['open'][i],
-                    'high': quote['high'][i],
-                    'low': quote['low'][i],
-                    'close': quote['close'][i],
-                    'volume': quote['volume'][i] if i < len(quote.get('volume', [])) else 0
-                })
+        for v in reversed(values):  # 從舊到新排列
+            dt = datetime.strptime(v['datetime'], '%Y-%m-%d')
+            ts = int(dt.timestamp())
+            candles.append({
+                'time': ts,
+                'open': float(v['open']),
+                'high': float(v['high']),
+                'low': float(v['low']),
+                'close': float(v['close']),
+                'volume': int(v['volume']) if 'volume' in v else 0
+            })
         
         return {
             'success': True,
             'ticker': ticker,
             'candles': candles,
-            'source': 'yahoo',
+            'source': 'twelvedata',
             'note': f'實時K線 ({len(candles)} 天)'
         }
     except Exception as e:
-        return {'success': False, 'error': f'Yahoo K线错误: {str(e)}'}
+        return {'success': False, 'error': f'Twelve Data K線錯誤: {str(e)}'}
+
+# 備用：模擬數據（當 API 失敗時）
+def get_simulated_data(ticker):
+    """備用模擬數據"""
+    import random
+    base_price = 200.0
+    return {
+        'ticker': ticker,
+        'name': ticker,
+        'price': round(base_price + random.uniform(-20, 20), 2),
+        'change': round(random.uniform(-5, 5), 2),
+        'changePercent': round(random.uniform(-2, 2), 2),
+        'prevClose': round(base_price + random.uniform(-5, 5), 2),
+        'open': round(base_price + random.uniform(-3, 3), 2),
+        'high': round(base_price + random.uniform(5, 15), 2),
+        'low': round(base_price + random.uniform(-15, -5), 2),
+        'volume': random.randint(10000000, 100000000),
+        'peRatio': round(random.uniform(15, 35), 1),
+        'eps': round(random.uniform(5, 15), 2),
+        'marketCap': random.randint(1000000000000, 3000000000000),
+        'fiftyTwoWeekHigh': round(base_price + 30, 2),
+        'fiftyTwoWeekLow': round(base_price - 50, 2),
+        'timestamp': datetime.now().timestamp() * 1000,
+        'source': 'simulated',
+        'note': '模擬數據'
+    }
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(json.dumps({'error': '请提供股票代码'}))
+        print(json.dumps({'error': '請提供股票代碼'}))
         sys.exit(1)
     
     ticker = sys.argv[1].upper()
     
     if '--kline' in sys.argv:
-        result = get_kline_yahoo(ticker)
+        result = get_kline_twelvedata(ticker)
     else:
-        result = get_realtime_price(ticker)
+        result = get_quote_twelvedata(ticker)
+        if 'error' in result:
+            print(json.dumps(get_simulated_data(ticker)))
+            sys.exit(0)
     
     print(json.dumps(result))

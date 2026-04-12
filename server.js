@@ -968,8 +968,8 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`📈 美股 AI 投顧助手已啟動: http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`📈 美股 AI 投顧助手已啟動: http://0.0.0.0:${PORT}`);
   console.log(`🔑 API: ${config.apiKey ? '已配置' : '未配置'}`);
   console.log(`🤖 模型: ${config.model}`);
 });
