@@ -111,6 +111,86 @@ def get_kline_twelvedata(ticker, days=90):
     except Exception as e:
         return {'success': False, 'error': f'Twelve Data K線錯誤: {str(e)}'}
 
+def get_quote_yahoo(ticker):
+    """Yahoo Finance 完整報價（備用方案，無需 API Key）"""
+    try:
+        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=5d&interval=1d'
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        })
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+            data = json.loads(response.read().decode())
+        
+        result = data.get('chart', {}).get('result', [{}])[0]
+        meta = result.get('meta', {})
+        
+        price = meta.get('regularMarketPrice', 0)
+        prev = meta.get('previousClose', 0)
+        change = price - prev if prev else 0
+        change_pct = (change / prev * 100) if prev else 0
+        
+        return {
+            'success': True,
+            'ticker': ticker,
+            'price': round(price, 2),
+            'change': round(change, 2),
+            'changePercent': round(change_pct, 2),
+            'prevClose': round(prev, 2),
+            'open': round(meta.get('regularMarketOpen', 0), 2),
+            'high': round(meta.get('regularMarketDayHigh', 0), 2),
+            'low': round(meta.get('regularMarketDayLow', 0), 2),
+            'volume': meta.get('regularMarketVolume', 0),
+            'timestamp': datetime.now().timestamp() * 1000,
+            'source': 'yahoo',
+            'note': 'Yahoo Finance 實時數據'
+        }
+    except Exception as e:
+        return {'error': f'Yahoo error: {str(e)}'}
+
+def get_kline_yahoo(ticker, days=90):
+    """Yahoo Finance K線數據（備用方案，無需 API Key）"""
+    try:
+        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={days}d&interval=1d'
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        })
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
+            data = json.loads(response.read().decode())
+        
+        result = data.get('chart', {}).get('result', [{}])[0]
+        ts = result.get('timestamp', [])
+        q = result.get('indicators', {'quote': [{}]}).get('quote', [{}])[0]
+        
+        candles = []
+        for i in range(len(ts)):
+            if q.get('open', [None])[i] is not None:
+                candles.append({
+                    'time': ts[i],
+                    'open': round(q['open'][i], 2),
+                    'high': round(q['high'][i], 2),
+                    'low': round(q['low'][i], 2),
+                    'close': round(q['close'][i], 2),
+                    'volume': q.get('volume', [0])[i] or 0
+                })
+        
+        return {
+            'success': True,
+            'ticker': ticker,
+            'candles': candles,
+            'source': 'yahoo',
+            'note': f'Yahoo Finance K線 ({len(candles)} 天)'
+        }
+    except Exception as e:
+        return {'success': False, 'error': f'Yahoo K線錯誤: {str(e)}'}
+
 # 備用：模擬數據（當 API 失敗時）
 def get_simulated_data(ticker):
     """備用模擬數據"""
@@ -146,10 +226,17 @@ if __name__ == '__main__':
     
     if '--kline' in sys.argv:
         result = get_kline_twelvedata(ticker)
+        # Twelve Data 失敗時，改用 Yahoo Finance
+        if not result.get('success'):
+            result = get_kline_yahoo(ticker)
     else:
         result = get_quote_twelvedata(ticker)
+        # Twelve Data 失敗時，改用 Yahoo Finance
         if 'error' in result:
-            print(json.dumps(get_simulated_data(ticker)))
-            sys.exit(0)
+            yahoo_result = get_quote_yahoo(ticker)
+            if 'success' in yahoo_result:
+                result = yahoo_result
+            else:
+                result = get_simulated_data(ticker)
     
     print(json.dumps(result))
