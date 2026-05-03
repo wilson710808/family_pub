@@ -11,100 +11,55 @@ const { spawn } = require('child_process');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// HTTP CONNECT 代理工具 — 讓 Node.js 通過 en1 繞過 VPN 訪問 NVIDIA API
-const net = require('net');
-const tls = require('tls');
-const PROXY_HOST = '127.0.0.1';
-const PROXY_PORT = 18080;
+// AI Gateway 整合 — 所有 AI 請求透過 Gateway 轉發
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://127.0.0.1:3005';
+const GATEWAY_API_PATH = process.env.GATEWAY_API_PATH || '/api/query';
+const APP_ID = process.env.APP_ID || 'stock-ai';
 
-function createProxyFetch() {
-  return async function proxyFetch(targetUrl, options = {}) {
-    const urlObj = new URL(targetUrl);
-    const targetHost = urlObj.hostname;
-    const targetPort = parseInt(urlObj.port) || (urlObj.protocol === 'https:' ? 443 : 80);
-    const isHttps = urlObj.protocol === 'https:';
-    const method = options.method || 'GET';
-    const headers = { ...options.headers };
-    const body = options.body ? JSON.stringify(options.body) : undefined;
+/**
+ * 透過 AI Gateway 發送 AI 請求
+ * Gateway 負責 API Key 池化、速率限制、負載均衡
+ */
+async function gatewayChat(messages, userId = 'stock-ai-user') {
+  // Gateway 需要 query_data 作為主輸入，messages 提供上下文
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+  const queryData = lastUserMsg ? lastUserMsg.content : '';
 
-    return new Promise((resolve, reject) => {
-      const socket = net.connect(PROXY_PORT, PROXY_HOST, () => {
-        socket.write('CONNECT ' + targetHost + ':' + targetPort + ' HTTP/1.1\r\nHost: ' + targetHost + '\r\n\r\n');
-      });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 35000); // 35s (Gateway 內部 30s + 緩衝)
 
-      socket.on('data', (chunk) => {
-        const str = chunk.toString();
-        if (str.includes('200')) {
-          try {
-            let stream;
-            if (isHttps) {
-              stream = tls.connect({
-                host: targetHost, port: targetPort, socket: socket,
-                rejectUnauthorized: false
-              });
-            } else {
-              stream = socket;
-            }
-
-            // 構造 HTTP 請求
-            let reqStr = method + ' ' + urlObj.pathname + urlObj.search + ' HTTP/1.1\r\n' +
-              'Host: ' + targetHost + '\r\n' +
-              'Content-Type: application/json\r\n';
-            if (body) reqStr += 'Content-Length: ' + Buffer.byteLength(body) + '\r\n';
-            if (headers['Authorization']) reqStr += 'Authorization: ' + headers['Authorization'] + '\r\n';
-            if (headers['HTTP-Referer']) reqStr += 'HTTP-Referer: ' + headers['HTTP-Referer'] + '\r\n';
-            if (headers['X-Title']) reqStr += 'X-Title: ' + headers['X-Title'] + '\r\n';
-            reqStr += 'Connection: close\r\n\r\n';
-            if (body) reqStr += body;
-
-            stream.once('error', reject);
-            stream.write(reqStr);
-
-            const respBuf = [];
-            stream.on('data', (c) => respBuf.push(c));
-            stream.on('end', () => {
-              const raw = respBuf.join('');
-              const bodyIdx = raw.indexOf('\r\n\r\n');
-              if (bodyIdx === -1) { reject(new Error('Invalid response')); return; }
-              const bodyText = raw.substring(bodyIdx + 4);
-              const statusLine = raw.split('\r\n')[0];
-              const status = parseInt(statusLine.split(' ')[1]);
-              resolve({
-                ok: status >= 200 && status < 300,
-                status, statusText: statusLine.substring(statusLine.indexOf(' ') + 1),
-                headers: { get: () => '' },
-                json: () => Promise.resolve(JSON.parse(bodyText)),
-                text: () => Promise.resolve(bodyText)
-              });
-            });
-          } catch (e) { reject(e); }
-          socket.removeAllListeners('error');
-        } else {
-          reject(new Error('Proxy refused: ' + str));
-          socket.destroy();
-        }
-      });
-
-      socket.on('error', reject);
-      socket.setTimeout(30000, () => { reject(new Error('proxy timeout')); socket.destroy(); });
+  try {
+    const response = await fetch(`${GATEWAY_URL}${GATEWAY_API_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        app_id: APP_ID,
+        user_id: userId,
+        query_data: queryData,
+        messages: messages,
+      }),
+      signal: controller.signal,
     });
-  };
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Gateway HTTP ${response.status}: ${errText.substring(0, 200)}`);
+    }
+
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Gateway 回覆失敗');
+    }
+    return data.response;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
-const proxyFetch = createProxyFetch();
-
-// 配置 - 多模型降級機制
+// 配置
 const config = {
-  apiKey: process.env.OPENAI_API_KEY || '',
-  baseUrl: process.env.OPENAI_BASE_URL || 'https://integrate.api.nvidia.com/v1',
-  model: process.env.OPENAI_MODEL || 'meta/llama-3.1-8b-instruct',
   alphaVantageKey: process.env.ALPHA_VANTAGE_KEY || 'demo',
-  // 降級模型列表（按優先順序）
-  fallbackModels: [
-    { url: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.1-8b-instruct', key: process.env.OPENAI_API_KEY },
-    { url: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/llama-3.1-nemotron-70b-instruct', key: process.env.OPENAI_API_KEY },
-  ],
-  aiTimeout: 30000, // 30秒超時（8B模型只需幾秒）
 };
 
 app.use(cors());
@@ -432,7 +387,7 @@ function generateFallbackAnalysis(ticker, type) {
 
 // 健康檢查
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', hasAPI: !!config.apiKey, model: config.model });
+  res.json({ status: 'ok', gateway: GATEWAY_URL, appId: APP_ID });
 });
 
 // 插拔式：返回可用分析类型配置
@@ -946,68 +901,16 @@ XXX
   }
 
   try {
-    // 多模型降級呼叫
-    let content = null;
-    let usedModel = null;
-
-    // 構建嘗試列表：主模型 + 備用模型
-    const tryModels = [
-      { url: config.baseUrl, model: config.model, key: config.apiKey },
-      ...config.fallbackModels.filter(m => m.model !== config.model)
+    // 透過 AI Gateway 發送分析請求
+    const aiMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: prompts[type] || prompts.chat }
     ];
+    const aiResponse = await gatewayChat(aiMessages, `analyze-${ticker}`);
 
-    for (const m of tryModels) {
-      if (!m.key) continue;
-      try {
-        console.log(`🔄 嘗試模型: ${m.model} @ ${m.url}`);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), config.aiTimeout);
-
-        const headers = {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${m.key}`,
-          'HTTP-Referer': 'https://stockai.local',
-          'X-Title': 'StockAI'
-        };
-
-        const response = await proxyFetch(`${m.url}/chat/completions`, {
-          method: 'POST',
-          headers,
-          body: {
-            model: m.model,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: prompts[type] || prompts.chat }
-            ],
-            temperature: 0.7,
-            max_tokens: 2000
-          }
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          const err = await response.text();
-          console.log(`❌ 模型 ${m.model} 返回 ${response.status}: ${err.substring(0, 100)}`);
-          continue; // 嘗試下一個模型
-        }
-
-        const data = await response.json();
-        content = data.choices?.[0]?.message?.content;
-        usedModel = m.model;
-        console.log(`✅ 模型 ${m.model} 成功`);
-        break; // 成功就跳出
-      } catch (err) {
-        console.log(`❌ 模型 ${m.model} 失敗: ${err.message}`);
-        continue; // 嘗試下一個
-      }
-    }
-
-    if (content) {
-      res.json({ success: true, content, ticker, type, model: usedModel });
+    if (aiResponse) {
+      res.json({ success: true, content: aiResponse, ticker, type, model: 'gateway' });
     } else {
-      // 所有模型都失敗，使用本地備用分析
-      console.log('⚠️ 所有模型失敗，使用本地備用分析');
       const fallbackContent = generateFallbackAnalysis(ticker, type);
       res.json({ success: true, content: fallbackContent, ticker, type, fallback: true });
     }
@@ -1030,74 +933,20 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    // 多模型降級呼叫
-    let content = null;
-    let usedModel = null;
-
-    const tryModels = [
-      { url: config.baseUrl, model: config.model, key: config.apiKey },
-      ...config.fallbackModels.filter(m => m.model !== config.model)
+    // 透過 AI Gateway 發送聊天請求
+    const aiMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...chatMessages
     ];
+    const aiResponse = await gatewayChat(aiMessages, `chat-${Date.now()}`);
 
-    for (const m of tryModels) {
-      if (!m.key) continue;
-      try {
-        const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), config.aiTimeout);
-
-        const headers = {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${m.key}`,
-          'HTTP-Referer': 'https://stockai.local',
-          'X-Title': 'StockAI'
-        };
-
-        const response = await proxyFetch(`${m.url}/chat/completions`, {
-          method: 'POST',
-          headers,
-          body: {
-            model: m.model,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              ...chatMessages
-            ],
-            temperature: 0.7,
-            max_tokens: 2500
-          }
-        });
-
-        clearTimeout(timeoutId2);
-        const data = await response.json();
-        content = data.choices?.[0]?.message?.content;
-        usedModel = m.model;
-        break;
-      } catch (err) {
-        continue;
-      }
-    }
-
-    if (content) {
-      res.json({ success: true, content, model: usedModel });
+    if (aiResponse) {
+      res.json({ success: true, content: aiResponse, model: 'gateway' });
     } else {
-      res.json({ 
-        success: true, 
-        content: `抱歉，AI 分析服務暫時不可用。
-
-請稍後重試，或嘗試以下替代方案：
-1. 刷新頁面後重新搜索
-2. 查看 K 線圖進行技術分析
-3. 參考其他專業財經網站
-
-**免責聲明：** 本系統提供的分析僅供參考，不構成投資建議。`,
-        fallback: true
-      });
+      res.json({ success: true, content: `抱歉，AI 分析服務暫時不可用。請稍後重試。`, fallback: true });
     }
   } catch (error) {
-    res.json({ 
-      success: true, 
-      content: `抱歉，AI 服務暫時不可用。請稍後重試。`,
-      fallback: true
-    });
+    res.json({ success: true, content: `抱歉，AI 服務暫時不可用。請稍後重試。`, fallback: true });
   }
 });
 
@@ -1106,10 +955,10 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`📈 美股 AI 投顧助手已啟動: http://0.0.0.0:${PORT}`);
-  console.log(`🔑 API: ${config.apiKey ? '已配置' : '未配置'}`);
-  console.log(`🤖 模型: ${config.model}`);
+  console.log(`🔗 Gateway: ${GATEWAY_URL}`);
+  console.log(`📱 App ID: ${APP_ID}`);
 });
 
 // 分析记录保存 API
